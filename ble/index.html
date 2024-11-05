@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<meta charset="utf-8">
+		<title>BLE Control</title>
+		<script type="text/javascript" src="ble.js" defer></script>
+		<link rel="stylesheet" href="style.css"/>
+		<link rel="manifest" href="manifest.json" />
+	</head>
+	<body>
+		<h2>BLE control</h2>
+
+		<p>
+			<button id="test" onclick="Scan()">Scan and connect to a BLE device</button>
+			<br>Debug Output:<br>
+			<textarea id="log" rows="10" style="width:100%;" disabled></textarea><br>
+		</p>
+	</body>
+</html>
