@@ -11,6 +11,7 @@ var UIElementType;
     UIElementType[UIElementType["NumberFieldInt32"] = 7] = "NumberFieldInt32";
     UIElementType[UIElementType["TextField"] = 8] = "TextField";
     UIElementType[UIElementType["PasswordField"] = 9] = "PasswordField";
+    UIElementType[UIElementType["Compass"] = 10] = "Compass";
 })(UIElementType || (UIElementType = {}));
 var ValueType;
 (function (ValueType) {
@@ -140,6 +141,11 @@ class UIGroupElement extends AUIElement {
             throw 'Child not present!';
         child.setPathValue(path.slice(1), newValue);
     }
+    setDisabled(disabled) {
+        for (let i = 0; i < this.elements.length; ++i) {
+            this.elements[i].setDisabled(disabled);
+        }
+    }
     addRGBWColorPicker(name, colorChannels) {
         const colorSelector = new UIColorSelector(name, this, colorChannels);
         this._addChildElement(colorSelector);
@@ -182,6 +188,11 @@ class UIGroupElement extends AUIElement {
     }
     addPasswordField(name, value, maxLength) {
         const element = new UIPasswordFieldElement(name, this, value, maxLength);
+        this._addChildElement(element);
+        return element;
+    }
+    addCompass(name, azimuth) {
+        const element = new UICompassElement(name, this, azimuth);
         this._addChildElement(element);
         return element;
     }
@@ -264,64 +275,104 @@ class UIColorSelector extends AUIElement {
         super(UIElementType.ColorSelector, name, parent);
         this.container = HTML.CreateDivElement('control-panel');
         this.colorPicker = HTML.CreateColorPickerElement();
+        this.btnScaleToMax = HTML.CreateButtonElement('M');
+        this.btnSwitchMode = HTML.CreateButtonElement('HSL');
         this.colorPicker.oninput = (_) => {
             const htmlColor = this.colorPicker.value;
             const rgb = ExtractRGB(htmlColor);
             this.onColorChange(new RGBWColor(rgb.r, rgb.g, rgb.b, 0));
         };
         this.colorPicker.dataset.name = name;
+        this.btnScaleToMax.onclick = () => {
+            this.scaleToMax();
+        };
+        this.btnScaleToMax.title = 'Scale to max brightness';
+        this.btnSwitchMode.onclick = () => {
+            this.switchMode();
+        };
         const colorPickerText = HTML.CreateSpanElement(' ' + name);
         this.container.appendChild(this.colorPicker);
+        this.container.appendChild(this.btnScaleToMax);
+        if (colorChannels.hasFullRGB()) {
+            this.container.appendChild(this.btnSwitchMode);
+        }
         this.container.appendChild(colorPickerText);
         this.container.appendChild(HTML.CreateBrElement());
         const pElement = document.createElement('p');
         const obj = this;
-        const onColorChangeFunction = function () {
-            const newColor = obj._getSliderColorValue();
+        const onRGBColorChangeFunction = function () {
+            const newColor = obj._getSliderRGBWColorValue();
             obj.onColorChange(newColor);
         };
-        this.sliderR = CreateRangeSlider(name + 'R', 'Red', onColorChangeFunction, 'red');
-        this.sliderG = CreateRangeSlider(name + 'G', 'Green', onColorChangeFunction, 'green');
-        this.sliderB = CreateRangeSlider(name + 'B', 'Blue', onColorChangeFunction, 'blue');
-        this.sliderW = CreateRangeSlider(name + 'W', 'White', onColorChangeFunction, 'white');
+        const onHSLColorChangeFunction = function () {
+            const newHSLWColor = obj._getSliderHSLWColorValue();
+            obj.onColorChange(newHSLWColor);
+        };
+        const onWColorChangeFunction = function () {
+            onRGBColorChangeFunction();
+        };
+        this.sliderR = CreateRangeSlider(name + 'R', 'Red', onRGBColorChangeFunction, 'red');
+        this.sliderG = CreateRangeSlider(name + 'G', 'Green', onRGBColorChangeFunction, 'green');
+        this.sliderB = CreateRangeSlider(name + 'B', 'Blue', onRGBColorChangeFunction, 'blue');
+        this.sliderH = CreateRangeSlider(name + 'H', 'Hue', onHSLColorChangeFunction, 'hue', 0, 360);
+        this.sliderS = CreateRangeSlider(name + 'S', 'Satur', onHSLColorChangeFunction, 'saturation', 0, 100);
+        this.sliderL = CreateRangeSlider(name + 'L', 'Light', onHSLColorChangeFunction, 'lightness', 0, 100);
+        this.sliderW = CreateRangeSlider(name + 'W', 'White', onWColorChangeFunction, 'white');
+        this.colorChannels = colorChannels;
+        this.hslMode = false;
         pElement.appendChild(this.sliderR.container);
         pElement.appendChild(this.sliderG.container);
         pElement.appendChild(this.sliderB.container);
+        pElement.appendChild(this.sliderH.container);
+        pElement.appendChild(this.sliderS.container);
+        pElement.appendChild(this.sliderL.container);
         pElement.appendChild(this.sliderW.container);
-        if (!colorChannels.r) {
-            this.sliderR.container.classList.add('hidden');
-        }
-        if (!colorChannels.g) {
-            this.sliderG.container.classList.add('hidden');
-        }
-        if (!colorChannels.b) {
-            this.sliderB.container.classList.add('hidden');
-        }
-        if (!colorChannels.w) {
-            this.sliderW.container.classList.add('hidden');
-        }
+        this._applyVisibility();
         this.container.appendChild(pElement);
     }
     getDomRootElement() {
         return this.container;
     }
-    _getSliderColorValue() {
+    _getSliderRGBWColorValue() {
         const sliderR = this.sliderR.slider;
         const sliderG = this.sliderG.slider;
         const sliderB = this.sliderB.slider;
         const sliderW = this.sliderW.slider;
         return new RGBWColor(parseInt(sliderR.value), parseInt(sliderG.value), parseInt(sliderB.value), parseInt(sliderW.value));
     }
+    _getSliderHSLWColorValue() {
+        const sliderH = this.sliderH.slider;
+        const sliderS = this.sliderS.slider;
+        const sliderL = this.sliderL.slider;
+        const sliderW = this.sliderW.slider;
+        return new HSLWColor(parseInt(sliderH.value), parseInt(sliderS.value), parseInt(sliderL.value), parseInt(sliderW.value));
+    }
     setValue(newColor) {
         // Set color picker
-        this.colorPicker.value = newColor.toHexColor();
-        this.sliderR.slider.value = '' + newColor.r;
-        this.sliderG.slider.value = '' + newColor.g;
-        this.sliderB.slider.value = '' + newColor.b;
-        this.sliderW.slider.value = '' + newColor.w;
+        this.colorPicker.value = newColor.toRGB().toHexColor();
+        const rgb = newColor.toRGB();
+        this.sliderR.slider.value = '' + rgb.r;
+        this.sliderG.slider.value = '' + rgb.g;
+        this.sliderB.slider.value = '' + rgb.b;
+        const hsl = newColor.toHSL();
+        this.sliderH.slider.value = '' + hsl.h;
+        this.sliderS.slider.value = '' + hsl.s;
+        this.sliderL.slider.value = '' + hsl.l;
+        this.sliderW.slider.value = '' + newColor.toRGBW().w;
     }
     getValue() {
-        return this._getSliderColorValue();
+        const rgbw = this._getSliderRGBWColorValue();
+        if (this.hslMode) {
+            const rgb = this._getSliderHSLWColorValue().toRGB();
+            rgbw.r = rgb.r;
+            rgbw.g = rgb.g;
+            rgbw.b = rgb.b;
+        }
+        return rgbw;
+    }
+    scaleToMax() {
+        const newColor = this._getSliderRGBWColorValue().scaleToMax();
+        this.onColorChange(newColor);
     }
     setPathValue(path, newValue) {
         this.checkValidPath(path);
@@ -330,11 +381,56 @@ class UIColorSelector extends AUIElement {
         }
         this.setValue(newValue.getRGBWValue());
     }
+    setDisabled(readOnly) {
+        this.colorPicker.disabled = readOnly;
+        this.sliderR.slider.disabled = readOnly;
+        this.sliderG.slider.disabled = readOnly;
+        this.sliderB.slider.disabled = readOnly;
+        this.sliderH.slider.disabled = readOnly;
+        this.sliderS.slider.disabled = readOnly;
+        this.sliderL.slider.disabled = readOnly;
+        this.sliderW.slider.disabled = readOnly;
+        this.btnScaleToMax.disabled = readOnly;
+    }
     onColorChange(newColor) {
         // Update all elements
         this.setValue(newColor);
         // Forward event
-        this.onInputValueChange(this, new ValueWrapper(newColor));
+        this.onInputValueChange(this, new ValueWrapper(newColor.toRGBW()));
+    }
+    switchMode() {
+        if (!this.colorChannels.hasFullRGB()) {
+            return;
+        }
+        this.hslMode = !this.hslMode;
+        this._applyVisibility();
+        this.btnSwitchMode.innerText = this.hslMode ? 'RGB' : 'HSL';
+    }
+    _applyVisibility() {
+        this.sliderR.container.classList.remove('hidden');
+        this.sliderG.container.classList.remove('hidden');
+        this.sliderB.container.classList.remove('hidden');
+        this.sliderH.container.classList.remove('hidden');
+        this.sliderS.container.classList.remove('hidden');
+        this.sliderL.container.classList.remove('hidden');
+        this.sliderW.container.classList.remove('hidden');
+        if (!this.colorChannels.r || this.hslMode) {
+            this.sliderR.container.classList.add('hidden');
+        }
+        if (!this.colorChannels.g || this.hslMode) {
+            this.sliderG.container.classList.add('hidden');
+        }
+        if (!this.colorChannels.b || this.hslMode) {
+            this.sliderB.container.classList.add('hidden');
+        }
+        if (!this.hslMode) {
+            this.sliderH.container.classList.add('hidden');
+            this.sliderS.container.classList.add('hidden');
+            this.sliderL.container.classList.add('hidden');
+        }
+        if (!this.colorChannels.w) {
+            this.sliderW.container.classList.add('hidden');
+        }
     }
 }
 class AUISelectorElement extends AUIElement {
@@ -394,6 +490,9 @@ class UIDropDownElement extends AUISelectorElement {
         super.setSelectedIndex(newSelectedIndex);
         this.options[newSelectedIndex].selected = true;
     }
+    setDisabled(disabled) {
+        this.dropDown.disabled = disabled;
+    }
     onInputValueChange() {
         for (let i = 0; i < this.options.length; ++i) {
             if (this.options[i].selected) {
@@ -441,6 +540,11 @@ class UIRadioElement extends AUISelectorElement {
         super.setSelectedIndex(newSelectedIndex);
         this.options[newSelectedIndex].checked = true;
     }
+    setDisabled(disabled) {
+        for (let i = 0; i < this.options.length; ++i) {
+            this.options[i].disabled = disabled;
+        }
+    }
     onInputValueChange() {
         for (let i = 0; i < this.options.length; ++i) {
             if (this.options[i].checked) {
@@ -475,6 +579,9 @@ class UICheckBoxElement extends AUIElement {
             throw 'Try to set a incompatible value type';
         }
         this.setState(newValue.getBooleanValue());
+    }
+    setDisabled(disabled) {
+        this.checkbox.disabled = disabled;
     }
     onInputValueChange() {
         const newState = this.checkbox.checked;
@@ -513,6 +620,9 @@ class UIRangeElement extends AUIElement {
         }
         this.setValue(newValue.getNumberValue());
     }
+    setDisabled(disabled) {
+        this.range.disabled = disabled;
+    }
     getValue() {
         return parseInt(this.range.value);
     }
@@ -537,6 +647,9 @@ class UIButtonElement extends AUIElement {
         this.checkValidPath(path);
         // This is ignored here, as the button does not store its state
         // TODO: Trigger a click animation here?
+    }
+    setDisabled(disabled) {
+        this.button.disabled = disabled;
     }
 }
 class UIInt32NumberFieldElement extends AUIElement {
@@ -579,6 +692,9 @@ class UIInt32NumberFieldElement extends AUIElement {
     setReadOnly(readOnly) {
         this.numberField.readOnly = readOnly;
         this.numberField.disabled = readOnly;
+    }
+    setDisabled(disabled) {
+        this.numberField.disabled = disabled;
     }
     getValue() {
         return parseInt(this.numberField.value);
@@ -626,6 +742,9 @@ class AUITextFieldElement extends AUIElement {
         }
         this.setValue(newValue.getStringValue());
     }
+    setDisabled(disabled) {
+        this.textField.disabled = disabled;
+    }
     setValue(newValue) {
         this.textField.value = newValue;
     }
@@ -650,6 +769,57 @@ class UIPasswordFieldElement extends AUITextFieldElement {
     }
     createTextField(value) {
         return HTML.CreatePasswordFieldElement(value);
+    }
+}
+/**
+ * Compass output element.
+ * Draws a compass with N/S/W/E directions and a needle with the current azimuth value.
+ */
+class UICompassElement extends AUIElement {
+    constructor(name, parent, azimuth) {
+        super(UIElementType.Compass, name, parent);
+        this.container = HTML.CreateDivElement();
+        this.compassContainer = HTML.CreateDivElement('compass-container');
+        this.compass = HTML.CreateDivElement('compass-border');
+        this.compassNeedle = HTML.CreateDivElement('compass-needle');
+        this.compassDirN = HTML.CreateDivElement(['compass-direction', 'compass-n']);
+        this.compassDirS = HTML.CreateDivElement(['compass-direction', 'compass-s']);
+        this.compassDirW = HTML.CreateDivElement(['compass-direction', 'compass-w']);
+        this.compassDirE = HTML.CreateDivElement(['compass-direction', 'compass-e']);
+        this.compassDirText = HTML.CreateDivElement('compass-label');
+        this.compassDirN.innerText = 'N';
+        this.compassDirS.innerText = 'S';
+        this.compassDirW.innerText = 'W';
+        this.compassDirE.innerText = 'E';
+        this.compass.appendChild(this.compassDirN);
+        this.compass.appendChild(this.compassDirS);
+        this.compass.appendChild(this.compassDirW);
+        this.compass.appendChild(this.compassDirE);
+        this.compassContainer.appendChild(this.compass);
+        this.compassContainer.appendChild(this.compassNeedle);
+        this.compassContainer.appendChild(this.compassDirText);
+        this.container.appendChild(this.compassContainer);
+        this.container.style.width = '150px';
+        this.container.style.height = '150px';
+        this.container.style.border = '5px';
+        this.setValue(azimuth);
+    }
+    getDomRootElement() {
+        return this.container;
+    }
+    setValue(newAzimuth) {
+        this.compass.style.transform = `rotate(${-newAzimuth}deg)`;
+        this.compassDirText.innerText = `${newAzimuth}°`;
+    }
+    setPathValue(path, newValue) {
+        this.checkValidPath(path);
+        if (newValue.type !== ValueType.Number) {
+            throw 'Try to set a incompatible value type';
+        }
+        this.setValue(newValue.getNumberValue());
+    }
+    setDisabled(disabled) {
+        // Compas is only a output element
     }
 }
 var GUIClientHeader;
@@ -738,7 +908,7 @@ class GUIProtocolHandler {
         Log("JSON data length: " + length + " bytes, is own request: " + isOwnRequest);
         const ref = this;
         const remainingContent = new Uint8Array(reader.extractRemainingData().buffer);
-        this.recvPendingData = new BLEDataReader(length, remainingContent, function (wholeBlock) {
+        this.recvPendingData = new BLEDataReader(length, function (wholeBlock) {
             const jsonString = DecodeUTF8String(wholeBlock);
             const object = JSON.parse(jsonString);
             if (isOwnRequest) {
@@ -746,6 +916,10 @@ class GUIProtocolHandler {
                 ref.onGuiJsonCallback(object);
             }
         });
+        let completed = this.recvPendingData.appendData(remainingContent);
+        if (completed) {
+            this.recvPendingData = undefined;
+        }
     }
     _handlePacket_UpdateValue(content) {
         const reader = new NetworkBufferReader(content);
@@ -776,6 +950,10 @@ class GUIProtocolHandler {
             case ValueType.Boolean: {
                 const boolValue = reader.extractUint8() > 0;
                 return new ValueWrapper(boolValue);
+            }
+            case ValueType.String: {
+                const stringValue = reader.extractString();
+                return new ValueWrapper(stringValue);
             }
             case ValueType.RGBWColor: {
                 const packedValue = reader.extractUint32();
@@ -885,11 +1063,10 @@ class BLEDataWriter {
     }
 }
 class BLEDataReader {
-    constructor(expectedSize, firstBlock, onCompleteFunction) {
+    constructor(expectedSize, onCompleteFunction) {
         this.buffer = new Uint8Array(expectedSize);
-        this.offset = firstBlock.length;
+        this.offset = 0;
         this.onCompleteFunction = onCompleteFunction;
-        MemCpy(this.buffer, 0, firstBlock, 0, firstBlock.length);
     }
     appendData(data) {
         MemCpy(this.buffer, this.offset, data, 0, data.length);
@@ -1035,6 +1212,12 @@ function ProcessJSON(currentRoot, jsonNode) {
             elem.setValue(initialColor);
             break;
         }
+        case 'compass': {
+            const compassNode = (jsonNode);
+            const azimuth = compassNode.value;
+            currentRoot.addCompass(jName, azimuth);
+            break;
+        }
         default:
             Log("Unhandled JSON element type: '" + jType + "'");
             break;
@@ -1046,11 +1229,11 @@ class SliderElement {
         this.container = container;
     }
 }
-function CreateRangeSlider(id, title, onColorChangeFunction, containerClass = null) {
+function CreateRangeSlider(id, title, onColorChangeFunction, containerClass = null, minValue = 0, maxValue = 255) {
     const element = document.createElement('input');
     element.type = 'range';
-    element.min = '0';
-    element.max = '255';
+    element.min = '' + minValue;
+    element.max = '' + maxValue;
     element.value = '0';
     element.classList.add('slider');
     element.id = id;
@@ -1131,8 +1314,31 @@ function MemCpy(target, targetOffset, source, sourceOffset, length) {
         target[targetOffset + i] = source[sourceOffset + i];
     }
 }
-class RGBColor {
+function ReloadPageAndDropWebWorkerCache() {
+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage('clearCacheAndReload');
+    }
+    else {
+        ReloadPage();
+    }
+}
+function ReloadPageAndDropWebWorkerCacheWithPrompt() {
+    if (confirm('Do you realy want to force-reload this page? This requires a internet connection.')) {
+        ReloadPageAndDropWebWorkerCache();
+    }
+}
+function ReloadPage() {
+    window.location.reload();
+}
+class IColor {
+}
+/**
+ * RGB color representation.
+ * Stores component values in the range [0, 255] (8 bit per channel).
+ */
+class RGBColor extends IColor {
     constructor(r = 0, g = 0, b = 0) {
+        super();
         this.r = r;
         this.g = g;
         this.b = b;
@@ -1141,6 +1347,58 @@ class RGBColor {
         return '#' + this.r.toString(16).padStart(2, '0')
             + this.g.toString(16).padStart(2, '0')
             + this.b.toString(16).padStart(2, '0');
+    }
+    getMaxComponentValue() {
+        return Math.max(this.r, this.g, this.b);
+    }
+    scale(factor) {
+        this.r *= factor;
+        this.g *= factor;
+        this.b *= factor;
+    }
+    scaleToMax() {
+        const maxValue = this.getMaxComponentValue();
+        if (maxValue !== 0) {
+            const scaleFactor = 255 / maxValue;
+            this.scale(scaleFactor);
+        }
+        return this;
+    }
+    toRGB() {
+        return this;
+    }
+    toRGBW() {
+        return new RGBWColor(this.r, this.g, this.b, 0);
+    }
+    toHSL() {
+        const r = this.r / 255;
+        const g = this.g / 255;
+        const b = this.b / 255;
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const delta = max - min;
+        let h = 0, s = 0, l = (max + min) / 2;
+        if (delta !== 0) {
+            s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+            if (max === r) {
+                h = (g - b) / delta + (g < b ? 6 : 0);
+            }
+            else if (max === g) {
+                h = (b - r) / delta + 2;
+            }
+            else {
+                h = (r - g) / delta + 4;
+            }
+            h *= 60;
+        }
+        h = Math.round(h);
+        s = Math.round(s * 100);
+        l = Math.round(l * 100);
+        return new HSLColor(h, s, l);
+    }
+    toHSLW() {
+        const hsl = this.toHSL();
+        return new HSLWColor(hsl.h, hsl.s, hsl.l, 0);
     }
 }
 class RGBWColor extends RGBColor {
@@ -1156,6 +1414,103 @@ class RGBWColor extends RGBColor {
         array[3] = this.w;
         return array;
     }
+    getMaxComponentValue() {
+        return Math.max(this.r, this.g, this.b, this.w);
+    }
+    scale(factor) {
+        this.r *= factor;
+        this.g *= factor;
+        this.b *= factor;
+        this.w *= factor;
+    }
+    scaleToMax() {
+        super.scaleToMax();
+        return this;
+    }
+    toRGBW() {
+        return this;
+    }
+    toHSLW() {
+        const hsl = this.toHSL();
+        return new HSLWColor(hsl.h, hsl.s, hsl.l, this.w);
+    }
+}
+class HSLColor extends IColor {
+    constructor(h = 0, s = 0, l = 0) {
+        super();
+        this.h = h;
+        this.s = s;
+        this.l = l;
+    }
+    toRGB() {
+        const h = this.h;
+        const s = this.s / 100;
+        const l = this.l / 100;
+        const c = (1 - Math.abs(2 * l - 1)) * s;
+        const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+        const m = l - c / 2;
+        let r = 0, g = 0, b = 0;
+        if (h >= 0 && h < 60) {
+            r = c;
+            g = x;
+            b = 0;
+        }
+        else if (h >= 60 && h < 120) {
+            r = x;
+            g = c;
+            b = 0;
+        }
+        else if (h >= 120 && h < 180) {
+            r = 0;
+            g = c;
+            b = x;
+        }
+        else if (h >= 180 && h < 240) {
+            r = 0;
+            g = x;
+            b = c;
+        }
+        else if (h >= 240 && h < 300) {
+            r = x;
+            g = 0;
+            b = c;
+        }
+        else if (h >= 300 && h < 360) {
+            r = c;
+            g = 0;
+            b = x;
+        }
+        // Convert to [0, 255] range
+        r = Math.round((r + m) * 255);
+        g = Math.round((g + m) * 255);
+        b = Math.round((b + m) * 255);
+        return new RGBColor(r, g, b);
+    }
+    toRGBW() {
+        const rgb = this.toRGB();
+        return new RGBWColor(rgb.r, rgb.g, rgb.b, 0);
+    }
+    toHSL() {
+        return this;
+    }
+    toHSLW() {
+        const hsl = this.toHSL();
+        return new HSLWColor(hsl.h, hsl.s, hsl.l, 0);
+    }
+}
+class HSLWColor extends HSLColor {
+    constructor(h = 0, s = 0, l = 0, w = 0) {
+        super(h, s, l);
+        this.w = w;
+    }
+    toRGBW() {
+        const rgbw = super.toRGBW();
+        rgbw.w = this.w;
+        return rgbw;
+    }
+    toHSLW() {
+        return this;
+    }
 }
 function ExtractRGB(color) {
     const r = parseInt(color.substr(1, 2), 16);
@@ -1164,9 +1519,9 @@ function ExtractRGB(color) {
     return new RGBColor(r, g, b);
 }
 function ExtractPackedRGBW(color) {
-    const w = (color & 0xFF000000) >> 24;
-    const r = (color & 0x00FF0000) >> 16;
-    const g = (color & 0x0000FF00) >> 8;
+    const w = (color & 0xFF000000) >>> 24;
+    const r = (color & 0x00FF0000) >>> 16;
+    const g = (color & 0x0000FF00) >>> 8;
     const b = (color & 0x000000FF);
     return new RGBWColor(r, g, b, w);
 }
@@ -1176,6 +1531,9 @@ class ColorChannels {
         this.g = g;
         this.b = b;
         this.w = w;
+    }
+    hasFullRGB() {
+        return this.r && this.g && this.b;
     }
 }
 function ExtractColorChannels(inputString) {
@@ -1554,6 +1912,7 @@ function Init() {
         nestedGroup.addRGBWColorPicker('Sub color picker with only the white channel', new ColorChannels(false, false, false, true));
         nestedGroup.addRadioGroup('Radio select test', ['Entry 1', 'Entry 2', 'Entry 3'], 1);
         nestedGroup.addDropDown('Drop down test', ['Entry 1', 'Entry 2', 'Entry 3'], 1);
+        rootGroup.setDisabled(true);
         const group2 = rootGroup.addGroup("Sub Group 2");
         group2.addCheckBox('CheckBox 1', false);
         group2.addCheckBox('CheckBox 2', true);
@@ -1562,6 +1921,26 @@ function Init() {
         group2.addButton('Test button');
         group2.addNumberFieldInt32('Number field 1', 42);
         group2.addNumberFieldInt32('Number field 2', 42).setReadOnly(true);
+        group2.addTextField("Text input", "Example", 30);
+        group2.addCompass('Compass2', 45);
+        group2.setDisabled(true);
+    }
+    if ('serviceWorker' in navigator) {
+        console.log('Registering service worker');
+        navigator.serviceWorker.register('serviceworker.js').then((reg) => {
+            reg.update();
+        });
+        // Force enable for the service worker
+        navigator.serviceWorker.ready.then(() => {
+            console.log('Service Worker ready.');
+        });
+        // Add event listener to forced page reload
+        navigator.serviceWorker.addEventListener('message', (event) => {
+            console.log(event);
+            if (event.data === 'reload') {
+                ReloadPage();
+            }
+        });
     }
 }
 Init();
