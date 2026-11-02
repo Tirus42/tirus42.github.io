@@ -13,9 +13,29 @@
 
 		<p>
 			<button onclick="Scan()">Scan and connect to a BLE device</button>
-			<button onclick="ReloadPageAndDropWebWorkerCacheWithPrompt()">Reload WebApp</button>
+			<button onclick="ToggleSettingsMenu()">⚙</button>
 			<br>Debug Output:<br>
 			<textarea id="log" rows="10" style="width:100%;" disabled></textarea><br>
 		</p>
+
+		<!-- Overlay settings menu -->
+		<div class="overlay" id="settings-overlay" onclick="HandleSettingsOverlayClick(event)">
+			<div class="overlay-content">
+			<button class="close-btn" onclick="ToggleSettingsMenu()">×</button>
+			<label>
+				<input type="checkbox" id="config_show_secondary_devices">Show secondary devices</input>
+			</label>
+			<br>
+			<label>
+				<input type="checkbox" id="config_show_advanced_fields">Show advanced control fields</input>
+			</label>
+			<br>
+			<label>
+				<input type="checkbox" id="config_log_ping_details">Log ping details</input>
+			</label>
+			<br>
+			<button onclick="ReloadPageAndDropWebWorkerCacheWithPrompt()">Reload WebApp</button>
+			</div>
+		</div>
 	</body>
 </html>

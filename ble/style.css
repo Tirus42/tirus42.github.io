@@ -1,3 +1,8 @@
+:root {
+    --bg-color: white;
+    --overlay-bg: rgba(0, 0, 0, 0.8);
+}
+
 body {
     font-size: 1em;
 }
@@ -12,17 +17,93 @@ div.bevel {
 div.bevel > div.span {
     margin-top: -10px;
     margin-left: 10px;
+    margin-right: 10px;
+    display: flex;
+    align-items: center;
 }
 
 div.bevel > div.span > span {
     font-size: 1.1em;
     padding: 0 3px 0 3px;
     background-color: white;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
+
+div.bevel > div.span > button {
+    flex: 0 0 auto;
+}
+
+/* Connection status (signal strength and ping) in the header border */
+.header-status {
+    flex: 0 0 auto;
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+    padding: 0 5px;
+    background-color: var(--bg-color);
+    font-size: 0.9em;
+    white-space: nowrap;
+}
+
+.signal-indicator {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 1.1em;
+}
+
+.signal-bar {
+    width: 3px;
+    border-radius: 1px;
+    background-color: currentColor;
+    opacity: 0.2;
+    transition: opacity 0.2s ease, background-color 0.2s ease;
+}
+
+.signal-bar.active {
+    opacity: 1;
+}
+
+.signal-indicator.low .signal-bar.active {
+    background-color: red;
+}
+
+.signal-bar:nth-child(1) {
+    height: 30%;
+}
+
+.signal-bar:nth-child(2) {
+    height: 45%;
+}
+
+.signal-bar:nth-child(3) {
+    height: 60%;
+}
+
+.signal-bar:nth-child(4) {
+    height: 80%;
+}
+
+.signal-bar:nth-child(5) {
+    height: 100%;
+}
+
+.header-ping {
+    font-variant-numeric: tabular-nums;
+    min-width: 5em;
+    text-align: right;
+}
+
 div.sliderexpandable > div.span {
     height:0;
 }
 
+button.control-button,
 div.bevel > div > div.check,
 div.bevel > div > div.range,
 div.bevel > div > div.select,
@@ -63,13 +144,39 @@ div.expander {
 }
 
 input.slider {
-    width: calc(100% - 5rem);
-    margin-top: 0.5rem;
-    margin-bottom: 0.5rem;
+    flex: 0 0 calc(100% - 6.5rem);
+    width: calc(100% - 6.5rem);
+    margin: 0.5rem 0;
+}
+
+.slider-labels {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    justify-content: flex-end;
+    align-items: baseline;
+    gap: 0.35em;
+    padding: 0 0.35em;
+    font-size: 0.9em;
+}
+
+.slider-labels > span {
+    min-width: 2.4em;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.slider-value {
+    min-width: 3.8em;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
 }
 
 .slider-background {
     border-radius: 5px;
+    display: flex;
+    align-items: center;
 }
 
 .slider-background.red {
@@ -84,16 +191,33 @@ input.slider {
     background-color: #0000ff44;
 }
 
+.slider-background.hue,
+.slider-background.saturation,
+.slider-background.lightness {
+    /* Scale the gradient to the slider itself instead of the whole row including the labels. */
+    background-size: calc(100% - 6.5rem) 100%;
+}
+
 .slider-background.hue {
-    background: linear-gradient(to right, red, yellow, green, cyan, blue, violet, red);
+    background-image: linear-gradient(to right, red, yellow, green, cyan, blue, violet, red);
+    /* Repeat the hue gradient behind the label area instead of stretching it. */
+    background-repeat: repeat-x;
+    /* The gradient makes white text unreadable in dark mode. */
+    color: black;
 }
 
 .slider-background.saturation {
-    background: linear-gradient(to right, gray, white);
+    /* The gradient ends in white, so extend that white area behind the label. */
+    background-color: white;
+    background-image: linear-gradient(to right, gray, white);
+    background-repeat: no-repeat;
 }
 
 .slider-background.lightness {
-    background: linear-gradient(to right, black, white);
+    /* The gradient ends in white, so extend that white area behind the label. */
+    background-color: white;
+    background-image: linear-gradient(to right, black, white);
+    background-repeat: no-repeat;
 }
 
 .slider-background.white {
@@ -148,6 +272,130 @@ input.slider {
 .compass-w { top: 50%; left: 5px; transform: translateY(-50%); }
 .compass-e { top: 50%; right: 5px; transform: translateY(-50%); }
 
+.overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: var(--overlay-bg);
+    display: none;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.overlay-content {
+    position: relative;
+    background: var(--bg-color);
+    color: var(--color);
+    padding: 30px;
+    border-radius: 10px;
+    text-align: center;
+    min-width: 200px;
+}
+
+.close-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: transparent;
+    border: none;
+    font-size: 20px;
+    cursor: pointer;
+    color: var(--color);
+}
+
+.overlay-content input[type="checkbox"] {
+    margin-bottom: 20px;
+}
+
+/**
+ * BLE pending connection animation elements.
+*/
+.ble-connect-container {
+    position: center;
+    width: 200px;
+    height: 200px;
+}
+
+.ble-connect-glyph {
+    width: 60px;
+    height: 60px;
+    background-color: #00aaff;
+    clip-path: polygon(50% 0%, 60% 40%, 40% 40%, 60% 60%, 40% 60%, 50% 100%);
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    animation: pulse 1.5s infinite;
+}
+
+.ble-connect-dot {
+    width: 10px;
+    height: 10px;
+    background-color: #00aaff;
+    border-radius: 50%;
+    position: absolute;
+    opacity: 0;
+}
+
+/* Individual dot start locations and animations */
+.ble-connect-dot:nth-child(1) {
+    top: 10%; left: 10%;
+    animation: flyToCenter 2s ease-in-out infinite;
+    animation-delay: 0s;
+}
+
+.ble-connect-dot:nth-child(2) {
+    top: 90%; left: 20%;
+    animation: flyToCenter 2.5s ease-in-out infinite;
+    animation-delay: 0.4s;
+}
+
+.ble-connect-dot:nth-child(3) {
+    top: 30%; left: 90%;
+    animation: flyToCenter 2.2s ease-in-out infinite;
+    animation-delay: 0.8s;
+}
+
+.ble-connect-dot:nth-child(4) {
+    top: 80%; left: 80%;
+    animation: flyToCenter 2.8s ease-in-out infinite;
+    animation-delay: 1.2s;
+}
+
+.ble-connect-dot:nth-child(5) {
+    top: 50%; left: 0%;
+    animation: flyToCenter 3s ease-in-out infinite;
+    animation-delay: 1.6s;
+}
+
+@keyframes flyToCenter {
+    0% {
+        opacity: 0;
+        transform: scale(0.5);
+    }
+    40% {
+        opacity: 1;
+        transform: scale(1.2);
+    }
+    100% {
+        top: 50%;
+        left: 50%;
+        opacity: 0;
+        transform: scale(0.8);
+    }
+}
+
+@keyframes pulse {
+    0%, 100% {
+        transform: translate(-50%, -50%) scale(1);
+    }
+    50% {
+        transform: translate(-50%, -50%) scale(1.1);
+    }
+}
 
 /* Media queries for dark mode users */
 
@@ -155,6 +403,8 @@ input.slider {
     :root {
         background: #111;
         color: #eee;
+        --bg-color: #111;
+        --overlay-bg: rgba(0, 0, 0, 0.9);
     }
 
     input, textarea {

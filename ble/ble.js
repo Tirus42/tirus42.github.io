@@ -1,4 +1,13 @@
 "use strict";
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
 var UIElementType;
 (function (UIElementType) {
     UIElementType[UIElementType["Group"] = 0] = "Group";
@@ -13,12 +22,18 @@ var UIElementType;
     UIElementType[UIElementType["PasswordField"] = 9] = "PasswordField";
     UIElementType[UIElementType["Compass"] = 10] = "Compass";
 })(UIElementType || (UIElementType = {}));
+var UIFlagType;
+(function (UIFlagType) {
+    UIFlagType[UIFlagType["Advanced"] = 0] = "Advanced";
+    UIFlagType[UIFlagType["ReadOnly"] = 1] = "ReadOnly";
+})(UIFlagType || (UIFlagType = {}));
 var ValueType;
 (function (ValueType) {
-    ValueType[ValueType["Number"] = 0] = "Number";
+    ValueType[ValueType["Int32"] = 0] = "Int32";
     ValueType[ValueType["String"] = 1] = "String";
     ValueType[ValueType["Boolean"] = 2] = "Boolean";
     ValueType[ValueType["RGBWColor"] = 3] = "RGBWColor";
+    ValueType[ValueType["Float32"] = 4] = "Float32";
 })(ValueType || (ValueType = {}));
 class ValueWrapper {
     constructor(value) {
@@ -26,7 +41,7 @@ class ValueWrapper {
         this.value = value;
     }
     getNumberValue() {
-        if (this.type === ValueType.Number) {
+        if (this.type === ValueType.Int32 || this.type == ValueType.Float32) {
             return this.value;
         }
         throw 'Wrong data type: ' + this.type;
@@ -51,7 +66,10 @@ class ValueWrapper {
     }
     _determineType(value) {
         if (typeof value === 'number') {
-            return ValueType.Number;
+            if (this._determinePossibleInt32(value)) {
+                return ValueType.Int32;
+            }
+            return ValueType.Float32;
         }
         if (typeof value === 'string') {
             return ValueType.String;
@@ -64,18 +82,78 @@ class ValueWrapper {
         }
         throw "Unsupported type of value '" + value + "'";
     }
+    /**
+     * Determines if the given number can be represented as int32 value or requires a floating point representation.
+     * Checks the value range, possible Infinity/NaN value and decimal places.
+     */
+    _determinePossibleInt32(value) {
+        // Signed 32‑bit integer limits
+        const INT32_MIN = -0x80000000; // -2^31
+        const INT32_MAX = 0x7FFFFFFF; //  2^31 – 1
+        if (!Number.isFinite(value)) {
+            return false;
+        }
+        if (Number.isInteger(value) && value >= INT32_MIN && value <= INT32_MAX) {
+            return true;
+        }
+        return false;
+    }
 }
 class AUIElement {
     constructor(type, name, parent) {
+        this.advanced = false;
+        this.readOnly = false;
         this.type = type;
         this.name = name;
         this.parent = parent;
+        if (parent === null) {
+            AUIElement.RootElements.push(this);
+        }
     }
     destroy() {
         if (this.parent) {
             if (!this.parent.eraseChildByRef(this)) {
                 throw "Failed to remove child from parent, child name: " + this.getAbsoluteName();
             }
+        }
+        else {
+            let index = AUIElement.RootElements.indexOf(this);
+            if (index < 0) {
+                throw "Expected element not present in the global RootElements list";
+            }
+            AUIElement.RootElements.splice(index, 1);
+        }
+    }
+    setAdvanced(advanced) {
+        this.advanced = advanced;
+        if (advanced && !Config.GetShowAdvancedFields()) {
+            this.setHidden(true);
+        }
+        if (!advanced || Config.GetShowAdvancedFields()) {
+            this.setHidden(false);
+        }
+    }
+    setFlag(flag, newState) {
+        switch (flag) {
+            case UIFlagType.Advanced:
+                this.setAdvanced(newState);
+                break;
+            case UIFlagType.ReadOnly:
+                this.setReadOnly(newState);
+                break;
+        }
+    }
+    setHidden(hidden) {
+        let rootElement = this.getDomRootElement();
+        if (hidden) {
+            rootElement.style.visibility = 'hidden';
+            rootElement.style.height = '0px';
+            rootElement.style.margin = '0px 0px 0px 0px';
+        }
+        else {
+            rootElement.style.removeProperty('visibility');
+            rootElement.style.removeProperty('height');
+            rootElement.style.removeProperty('margin');
         }
     }
     checkValidPath(path) {
@@ -94,6 +172,12 @@ class AUIElement {
         ret.push(this.name);
         return ret;
     }
+    getByPath(path) {
+        if (path.length === 1 && path[0] === this.getName()) {
+            return this;
+        }
+        return null;
+    }
     onInputValueChange(sourceElement, newValue) {
         if (this.parent) {
             this.parent.onInputValueChange(sourceElement, newValue);
@@ -102,7 +186,20 @@ class AUIElement {
             Log("Unhanded change event on " + sourceElement.getAbsoluteName());
         }
     }
+    onConfigChanged() {
+        this.setAdvanced(this.advanced);
+    }
+    static notifyConfigChanges() {
+        AUIElement.RootElements.forEach((root) => {
+            root.onConfigChanged();
+        });
+    }
 }
+/**
+ * List of all root elements. Required to access them for global events like config changes.
+ * The AUIElement constructor and destructor handles the add/removal.
+ */
+AUIElement.RootElements = [];
 const BTN_TEXT_HIDE = 'Λ';
 const BTN_TEXT_SHOW = 'V';
 class UIGroupElement extends AUIElement {
@@ -141,10 +238,8 @@ class UIGroupElement extends AUIElement {
             throw 'Child not present!';
         child.setPathValue(path.slice(1), newValue);
     }
-    setDisabled(disabled) {
-        for (let i = 0; i < this.elements.length; ++i) {
-            this.elements[i].setDisabled(disabled);
-        }
+    setReadOnly(readOnly) {
+        // Does not have any effect there
     }
     addRGBWColorPicker(name, colorChannels) {
         const colorSelector = new UIColorSelector(name, this, colorChannels);
@@ -166,8 +261,8 @@ class UIGroupElement extends AUIElement {
         this._addChildElement(element);
         return element;
     }
-    addRange(name, min, max, value) {
-        const element = new UIRangeElement(name, this, min, max, value);
+    addRange(name, min, max, value, showPercent = false) {
+        const element = new UIRangeElement(name, this, min, max, value, showPercent);
         this._addChildElement(element);
         return element;
     }
@@ -260,6 +355,18 @@ class UIGroupElement extends AUIElement {
         }
         return false;
     }
+    getByPath(path) {
+        if (super.getByPath(path) !== null)
+            return this;
+        if (path.length >= 2 && path[0] === this.getName()) {
+            let child = this.getChildByName(path[1]);
+            if (child) {
+                let subPath = [...path].splice(1);
+                return child.getByPath(subPath);
+            }
+        }
+        return null;
+    }
     removeChildByName(name) {
         for (let i = 0; i < this.elements.length; ++i) {
             if (this.elements[i].getName() == name) {
@@ -268,6 +375,12 @@ class UIGroupElement extends AUIElement {
             }
         }
         return false;
+    }
+    onConfigChanged() {
+        super.onConfigChanged();
+        this.elements.forEach(child => {
+            child.onConfigChanged();
+        });
     }
 }
 class UIColorSelector extends AUIElement {
@@ -359,6 +472,20 @@ class UIColorSelector extends AUIElement {
         this.sliderS.slider.value = '' + hsl.s;
         this.sliderL.slider.value = '' + hsl.l;
         this.sliderW.slider.value = '' + newColor.toRGBW().w;
+        this._updateSliderValueLabels();
+    }
+    /**
+     * Updates the value labels of all sliders, including the currently hidden
+     * RGB or HSL ones, so the correct values are shown after switching modes.
+     */
+    _updateSliderValueLabels() {
+        this.sliderR.updateValueLabel();
+        this.sliderG.updateValueLabel();
+        this.sliderB.updateValueLabel();
+        this.sliderH.updateValueLabel();
+        this.sliderS.updateValueLabel();
+        this.sliderL.updateValueLabel();
+        this.sliderW.updateValueLabel();
     }
     getValue() {
         const rgbw = this._getSliderRGBWColorValue();
@@ -381,7 +508,7 @@ class UIColorSelector extends AUIElement {
         }
         this.setValue(newValue.getRGBWValue());
     }
-    setDisabled(readOnly) {
+    setReadOnly(readOnly) {
         this.colorPicker.disabled = readOnly;
         this.sliderR.slider.disabled = readOnly;
         this.sliderG.slider.disabled = readOnly;
@@ -453,7 +580,7 @@ class AUISelectorElement extends AUIElement {
     }
     setPathValue(path, newValue) {
         this.checkValidPath(path);
-        if (newValue.type !== ValueType.Number) {
+        if (newValue.type !== ValueType.Int32) {
             throw 'Try to set a incompatible value type';
         }
         this.setSelectedIndex(newValue.getNumberValue());
@@ -490,8 +617,8 @@ class UIDropDownElement extends AUISelectorElement {
         super.setSelectedIndex(newSelectedIndex);
         this.options[newSelectedIndex].selected = true;
     }
-    setDisabled(disabled) {
-        this.dropDown.disabled = disabled;
+    setReadOnly(readOnly) {
+        this.dropDown.disabled = readOnly;
     }
     onInputValueChange() {
         for (let i = 0; i < this.options.length; ++i) {
@@ -540,9 +667,9 @@ class UIRadioElement extends AUISelectorElement {
         super.setSelectedIndex(newSelectedIndex);
         this.options[newSelectedIndex].checked = true;
     }
-    setDisabled(disabled) {
+    setReadOnly(readOnly) {
         for (let i = 0; i < this.options.length; ++i) {
-            this.options[i].disabled = disabled;
+            this.options[i].disabled = readOnly;
         }
     }
     onInputValueChange() {
@@ -580,8 +707,8 @@ class UICheckBoxElement extends AUIElement {
         }
         this.setState(newValue.getBooleanValue());
     }
-    setDisabled(disabled) {
-        this.checkbox.disabled = disabled;
+    setReadOnly(readOnly) {
+        this.checkbox.disabled = readOnly;
     }
     onInputValueChange() {
         const newState = this.checkbox.checked;
@@ -589,12 +716,14 @@ class UICheckBoxElement extends AUIElement {
     }
 }
 class UIRangeElement extends AUIElement {
-    constructor(name, parent, min, max, value) {
+    constructor(name, parent, min, max, value, showPercent = false) {
         super(UIElementType.RangeSelector, name, parent);
         this.container = HTML.CreateDivElement('bevel');
         this.range = HTML.CreateRangeElement(min, max, value);
+        this.rawValueLabel = HTML.CreateLabelElement();
         this.minValue = min;
         this.maxValue = max;
+        this.showPercent = showPercent;
         this.range.oninput = () => {
             this.onInputValueChange();
         };
@@ -603,53 +732,84 @@ class UIRangeElement extends AUIElement {
         spanDiv.appendChild(span);
         this.container.appendChild(spanDiv);
         this.container.appendChild(this.range);
+        this.container.appendChild(this.rawValueLabel);
+        this._updateUIValues();
     }
     getDomRootElement() {
         return this.container;
+    }
+    setReadOnly(readOnly) {
+        this.range.readOnly = readOnly;
+        this.range.disabled = readOnly;
     }
     setValue(newValue) {
         if (newValue > this.maxValue || newValue < this.minValue) {
             throw "Invalid new value, out of bounds of range [" + this.minValue + ", " + this.maxValue + "].";
         }
         this.range.value = '' + newValue;
+        this._updateUIValues();
     }
     setPathValue(path, newValue) {
         this.checkValidPath(path);
-        if (newValue.type !== ValueType.Number) {
+        if (newValue.type !== ValueType.Int32) {
             throw 'Try to set a incompatible value type';
         }
         this.setValue(newValue.getNumberValue());
-    }
-    setDisabled(disabled) {
-        this.range.disabled = disabled;
     }
     getValue() {
         return parseInt(this.range.value);
     }
     onInputValueChange() {
+        this._updateUIValues();
         super.onInputValueChange(this, new ValueWrapper(this.getValue()));
+    }
+    /**
+     * Updates the label next to the slider.
+     *
+     * When the percent flag is set, the value is shown as a percentage of the
+     * range [minValue, maxValue] (e.g. "55.2%"). Otherwise the raw value is shown
+     * (e.g. "10 / 255") as before.
+     */
+    _updateUIValues() {
+        if (this.showPercent) {
+            this.rawValueLabel.innerHTML = this._getPercentText();
+        }
+        else {
+            this.rawValueLabel.innerHTML = this.getValue() + ' / ' + this.maxValue;
+        }
+    }
+    /**
+     * \return the current value relative to the range as percentage with one digit of precision.
+     */
+    _getPercentText() {
+        const range = this.maxValue - this.minValue;
+        // Avoid a division by zero for a range without any span.
+        if (range <= 0) {
+            return '0.0%';
+        }
+        const percent = (this.getValue() - this.minValue) / range * 100;
+        return percent.toFixed(1) + '%';
     }
 }
 class UIButtonElement extends AUIElement {
     constructor(name, parent) {
         super(UIElementType.Button, name, parent);
-        this.container = HTML.CreateDivElement('bevel');
         this.button = HTML.CreateButtonElement(name);
-        this.container.appendChild(this.button);
+        this.button.classList.add('control-button');
         this.button.onclick = () => {
             this.onInputValueChange(this, new ValueWrapper(true));
         };
     }
     getDomRootElement() {
-        return this.container;
+        return this.button;
     }
     setPathValue(path, newValue) {
         this.checkValidPath(path);
         // This is ignored here, as the button does not store its state
         // TODO: Trigger a click animation here?
     }
-    setDisabled(disabled) {
-        this.button.disabled = disabled;
+    setReadOnly(readOnly) {
+        this.button.disabled = readOnly;
     }
 }
 class UIInt32NumberFieldElement extends AUIElement {
@@ -684,7 +844,7 @@ class UIInt32NumberFieldElement extends AUIElement {
     }
     setPathValue(path, newValue) {
         this.checkValidPath(path);
-        if (newValue.type !== ValueType.Number) {
+        if (newValue.type !== ValueType.Int32) {
             throw 'Try to set a incompatible value type';
         }
         this.setValue(newValue.getNumberValue());
@@ -692,9 +852,6 @@ class UIInt32NumberFieldElement extends AUIElement {
     setReadOnly(readOnly) {
         this.numberField.readOnly = readOnly;
         this.numberField.disabled = readOnly;
-    }
-    setDisabled(disabled) {
-        this.numberField.disabled = disabled;
     }
     getValue() {
         return parseInt(this.numberField.value);
@@ -742,8 +899,8 @@ class AUITextFieldElement extends AUIElement {
         }
         this.setValue(newValue.getStringValue());
     }
-    setDisabled(disabled) {
-        this.textField.disabled = disabled;
+    setReadOnly(readOnly) {
+        this.textField.readOnly = readOnly;
     }
     setValue(newValue) {
         this.textField.value = newValue;
@@ -813,30 +970,120 @@ class UICompassElement extends AUIElement {
     }
     setPathValue(path, newValue) {
         this.checkValidPath(path);
-        if (newValue.type !== ValueType.Number) {
+        if (newValue.type !== ValueType.Int32) {
             throw 'Try to set a incompatible value type';
         }
         this.setValue(newValue.getNumberValue());
     }
-    setDisabled(disabled) {
-        // Compas is only a output element
+    setReadOnly(readOnly) {
+        // Compass is only a output element
     }
 }
+/**
+ * Status display shown in the border / legend of a connected device.
+ *
+ * The signal strength is visualized as a number of filled bars. The exact dBm
+ * value is available as tooltip. The last ping round trip time is shown as
+ * text next to it.
+ */
+class UIHeaderStatusElement {
+    constructor() {
+        this.container = HTML.CreateDivElement('header-status');
+        this.signalIndicator = HTML.CreateSpanElement();
+        this.signalIndicator.classList.add('signal-indicator');
+        this.signalIndicator.setAttribute('role', 'img');
+        this.signalBars = [];
+        for (let i = 0; i < UIHeaderStatusElement.SIGNAL_BAR_COUNT; ++i) {
+            const bar = HTML.CreateSpanElement();
+            bar.classList.add('signal-bar');
+            this.signalIndicator.appendChild(bar);
+            this.signalBars.push(bar);
+        }
+        this.pingLabel = HTML.CreateSpanElement('ping: -');
+        this.pingLabel.classList.add('header-ping');
+        this.container.appendChild(this.signalIndicator);
+        this.container.appendChild(this.pingLabel);
+    }
+    /**
+     * Updates the signal strength indicator.
+     * \param rssi signal strength in dBm.
+     */
+    setSignalStrength(rssi) {
+        const filledBars = UIHeaderStatusElement._getFilledBarCount(rssi);
+        this.signalBars.forEach((bar, index) => {
+            bar.classList.toggle('active', index < filledBars);
+        });
+        this.signalIndicator.classList.toggle('low', filledBars === 1);
+        const description = UIHeaderStatusElement._getSignalDescription(filledBars);
+        const info = 'Signal strength: ' + rssi + ' dBm (' + description + ')';
+        this.signalIndicator.title = info;
+        this.signalIndicator.setAttribute('aria-label', info);
+    }
+    /**
+     * Updates the ping time text.
+     * \param timeMs measured round trip time in milliseconds or a negative value when unknown.
+     */
+    setPingTime(timeMs) {
+        if (timeMs < 0) {
+            this.pingLabel.innerText = 'ping: -';
+            this.pingLabel.title = 'No ping response yet';
+            return;
+        }
+        this.pingLabel.innerText = 'ping: ' + timeMs + ' ms';
+        this.pingLabel.title = 'Ping round trip time: ' + timeMs + ' ms';
+    }
+    static _getFilledBarCount(rssi) {
+        let count = 0;
+        for (const threshold of UIHeaderStatusElement.SIGNAL_BAR_THRESHOLDS) {
+            if (rssi >= threshold) {
+                ++count;
+            }
+        }
+        // Even a very weak signal is shown with one visible bar.
+        return Math.max(count, 1);
+    }
+    static _getSignalDescription(filledBars) {
+        if (filledBars >= 5) {
+            return 'excellent';
+        }
+        if (filledBars >= 4) {
+            return 'good';
+        }
+        if (filledBars >= 3) {
+            return 'fair';
+        }
+        if (filledBars >= 2) {
+            return 'weak';
+        }
+        return 'very weak';
+    }
+}
+UIHeaderStatusElement.SIGNAL_BAR_COUNT = 5;
+/**
+ * Minimum RSSI (dBm) for 1, 2, ... 5 filled bars.
+ */
+UIHeaderStatusElement.SIGNAL_BAR_THRESHOLDS = [-90, -80, -70, -60, -50];
 var GUIClientHeader;
 (function (GUIClientHeader) {
     GUIClientHeader[GUIClientHeader["RequestGUI"] = 0] = "RequestGUI";
     GUIClientHeader[GUIClientHeader["SetValue"] = 1] = "SetValue";
+    GUIClientHeader[GUIClientHeader["Ping"] = 2] = "Ping";
 })(GUIClientHeader || (GUIClientHeader = {}));
 var GUIServerHeader;
 (function (GUIServerHeader) {
     GUIServerHeader[GUIServerHeader["GUIData"] = 0] = "GUIData";
     GUIServerHeader[GUIServerHeader["UpdateValue"] = 1] = "UpdateValue";
+    GUIServerHeader[GUIServerHeader["UpdateFlag"] = 2] = "UpdateFlag";
+    GUIServerHeader[GUIServerHeader["PingResponseWithConnectionInfo"] = 3] = "PingResponseWithConnectionInfo";
 })(GUIServerHeader || (GUIServerHeader = {}));
 class GUIProtocolHandler {
-    constructor(characteristic, onGuiJsonCallback, onValueUpdateCallback) {
+    constructor(characteristic, onGuiJsonCallback, onValueUpdateCallback, onFlagUpdateCallback, onPingResponseCallback) {
+        this.failedNotificationListenCount = 0;
         this.characteristic = characteristic;
         this.onGuiJsonCallback = onGuiJsonCallback;
         this.onValueUpdateCallback = onValueUpdateCallback;
+        this.onFlagUpdateCallback = onFlagUpdateCallback;
+        this.onPingResponseCallback = onPingResponseCallback;
         this.dataWriter = new BLEDataWriter(characteristic);
         this.onCharacteristicChanged = (event) => { this._onCharacteristicChanged(event); };
         this.pendingRequestIds = new Set();
@@ -846,6 +1093,11 @@ class GUIProtocolHandler {
                 this._requestGUI();
             })
                 .catch((err) => {
+                this.failedNotificationListenCount++;
+                if (this.failedNotificationListenCount > 10) {
+                    Log("Error: startNotifications() failed 10 times, aborting");
+                    throw "Error: startNotifications() failed 10 times, aborting";
+                }
                 Log("Error in startNotifications(): " + err + "; Repeating ...");
                 startNotificationFunction();
             });
@@ -861,6 +1113,12 @@ class GUIProtocolHandler {
         const value = PacketBuilder.CreateDynamicValue(newValue);
         const packet = MergeUint8Arrays3(head, name, value);
         this.dataWriter.sendData(absoluteName.toString(), packet);
+    }
+    sendPing() {
+        const requestId = this._generateRequestId();
+        const packet = PacketBuilder.CreatePacketHeader(GUIClientHeader.Ping, requestId);
+        this.dataWriter.sendData("ping", packet);
+        return requestId;
     }
     _generateRequestId() {
         // TODO: Better unique request id (random number)
@@ -894,6 +1152,14 @@ class GUIProtocolHandler {
             }
             case GUIServerHeader.UpdateValue: {
                 this._handlePacket_UpdateValue(content);
+                break;
+            }
+            case GUIServerHeader.UpdateFlag: {
+                this._handlePacket_UpdateFlag(content);
+                break;
+            }
+            case GUIServerHeader.PingResponseWithConnectionInfo: {
+                this._handlePacket_PingResponseWithConnectionInfo(content);
                 break;
             }
             default:
@@ -940,10 +1206,47 @@ class GUIProtocolHandler {
             Log("Error during UpdateValue packet: " + err);
         }
     }
+    _handlePacket_UpdateFlag(content) {
+        const reader = new NetworkBufferReader(content);
+        const requestId = reader.extractUint32();
+        const length = reader.extractUint32();
+        const isOwnRequest = this.pendingRequestIds.has(requestId);
+        if (isOwnRequest) {
+            // We don't need to handle our own value updates, ignore them
+            return;
+        }
+        const key = reader.extractString();
+        const flag = reader.extractUint8();
+        const newState = reader.extractUint8() > 0;
+        try {
+            this.onFlagUpdateCallback(key.split(','), flag, newState);
+        }
+        catch (err) {
+            Log("Error during UpdateFlag packet: " + err);
+        }
+    }
+    _handlePacket_PingResponseWithConnectionInfo(content) {
+        const reader = new NetworkBufferReader(content);
+        const requestId = reader.extractUint32();
+        const isOwnRequest = this.pendingRequestIds.has(requestId);
+        if (!isOwnRequest) {
+            // Possible ping from another client, ignore it
+            return;
+        }
+        const data = {
+            requestId: requestId,
+            rssi: reader.extractInt8(),
+            connectionIntervalMs: reader.extractUint16() / 1.25,
+            uptime: reader.extractUint32(),
+            freeHeap: reader.extractUint32(),
+            minFreeHeap: reader.extractUint32(),
+        };
+        this.onPingResponseCallback(data);
+    }
     _readDataValue(reader) {
         const valueType = reader.extractUint8();
         switch (valueType) {
-            case ValueType.Number: {
+            case ValueType.Int32: {
                 const numberValue = reader.extractInt32();
                 return new ValueWrapper(numberValue);
             }
@@ -959,6 +1262,10 @@ class GUIProtocolHandler {
                 const packedValue = reader.extractUint32();
                 const rgbwValue = ExtractPackedRGBW(packedValue);
                 return new ValueWrapper(rgbwValue);
+            }
+            case ValueType.Float32: {
+                const numberValue = reader.extractFloat32();
+                return new ValueWrapper(numberValue);
             }
             default: {
                 throw "Received unhandled data type " + valueType + " via UpdateValue packet.";
@@ -980,6 +1287,11 @@ class PacketBuilder {
         new DataView(data.buffer).setUint32(0, number, false);
         return data;
     }
+    static CreateFloat32(number) {
+        const data = new Uint8Array(4);
+        new DataView(data.buffer).setFloat32(0, number, false);
+        return data;
+    }
     static CreateLengthPrefixedString(str) {
         const data = EncodeUTF8String(str);
         return MergeUint8Arrays(PacketBuilder.CreateUInt32(data.length), data);
@@ -987,7 +1299,7 @@ class PacketBuilder {
     static CreateDynamicValue(value) {
         const prefix = PacketBuilder.CreateUInt8(value.type);
         switch (value.type) {
-            case ValueType.Number:
+            case ValueType.Int32:
                 return MergeUint8Arrays(prefix, PacketBuilder.CreateUInt32(value.getNumberValue()));
             case ValueType.Boolean:
                 return MergeUint8Arrays(prefix, PacketBuilder.CreateUInt8(value.getBooleanValue() ? 1 : 0));
@@ -999,6 +1311,8 @@ class PacketBuilder {
                 const b = PacketBuilder.CreateUInt8(value.getRGBWValue().b);
                 const w = PacketBuilder.CreateUInt8(value.getRGBWValue().w);
                 return MergeUint8Arrays5(prefix, w, r, g, b);
+            case ValueType.Float32:
+                return MergeUint8Arrays(prefix, PacketBuilder.CreateFloat32(value.getNumberValue()));
         }
     }
 }
@@ -1021,6 +1335,7 @@ class BLEDataWriter {
         this.characteristic = characteristic;
         this.pendingData = [];
         this.failedRepeatCount = 0;
+        this.isFirstRequest = true;
     }
     sendData(groupName, data) {
         const noOperationPending = this.pendingData.length === 0;
@@ -1032,34 +1347,36 @@ class BLEDataWriter {
         }
         this.pendingData.push(entry);
         if (noOperationPending) {
-            this._sendData();
+            this._sendPendingData();
         }
     }
-    _sendData() {
-        const obj = this;
-        const sendData = this.pendingData[0].data;
-        const reqSendFunction = function (characteristic, data) {
-            characteristic.writeValue(data).then(_ => {
-                if (obj.pendingData[0].data === sendData) {
-                    // Only remove the entry when the content was not replaced in the meantime
-                    obj.pendingData.shift();
-                }
-                else {
-                    obj._sendData();
-                }
-            }).catch(_ => {
-                // This is a workaround for android, because most times the first request failes with a "unknown reason"
-                // Also see https://github.com/LedgerHQ/ledgerjs/issues/352
-                Log('BLE send operation failed, repeating ...');
-                obj.failedRepeatCount++;
-                if (obj.failedRepeatCount > 10) {
-                    Log('Aborting repeat operation due to 10 failed retries ...');
-                    return;
-                }
-                reqSendFunction(characteristic, data);
-            });
-        };
-        reqSendFunction(this.characteristic, this.pendingData[0].data);
+    _sendPendingData() {
+        if (this.pendingData.length == 0)
+            return;
+        const data = this.pendingData[0].data;
+        // Send the first request using writeValue(), otherwise passkey pairing will not work
+        // as no request will be prompted when using writeValueWithoutResponse().
+        const writeFunction = (this.isFirstRequest ? this.characteristic.writeValue : this.characteristic.writeValueWithoutResponse).bind(this.characteristic);
+        this.isFirstRequest = false;
+        writeFunction(data).then(() => {
+            if (this.pendingData[0].data === data) {
+                // Only remove the entry when the content was not replaced in the meantime
+                this.pendingData.shift();
+            }
+            if (this.pendingData.length > 0) {
+                this._sendPendingData();
+            }
+        }).catch(() => {
+            // This is a workaround for android, because most times the first request failes with a "unknown reason"
+            // Also see https://github.com/LedgerHQ/ledgerjs/issues/352
+            Log('BLE send operation failed, repeating ...');
+            this.failedRepeatCount++;
+            if (this.failedRepeatCount > 10) {
+                Log('Aborting repeat operation due to 10 failed retries ...');
+                return;
+            }
+            this._sendPendingData();
+        });
     }
 }
 class BLEDataReader {
@@ -1092,6 +1409,18 @@ class NetworkBufferReader {
         this.offset += 1;
         return value;
     }
+    extractInt8() {
+        this._checkRange(1);
+        const value = this.dataView.getInt8(this.offset);
+        this.offset += 1;
+        return value;
+    }
+    extractUint16() {
+        this._checkRange(2);
+        const value = this.dataView.getUint16(this.offset, false);
+        this.offset += 2;
+        return value;
+    }
     extractUint32() {
         this._checkRange(4);
         const value = this.dataView.getUint32(this.offset, false);
@@ -1101,6 +1430,12 @@ class NetworkBufferReader {
     extractInt32() {
         this._checkRange(4);
         const value = this.dataView.getInt32(this.offset, false);
+        this.offset += 4;
+        return value;
+    }
+    extractFloat32() {
+        this._checkRange(4);
+        const value = this.dataView.getFloat32(this.offset, false);
         this.offset += 4;
         return value;
     }
@@ -1127,6 +1462,7 @@ class NetworkBufferReader {
 function ProcessJSON(currentRoot, jsonNode) {
     const jType = jsonNode.type.toLowerCase();
     const jName = jsonNode.name;
+    let createdElement;
     switch (jType) {
         case 'root': {
             const rootNode = (jsonNode);
@@ -1134,6 +1470,7 @@ function ProcessJSON(currentRoot, jsonNode) {
             rootNode.elements.forEach(entry => {
                 ProcessJSON(currentRoot, entry);
             });
+            createdElement = currentRoot;
             break;
         }
         case 'group': {
@@ -1147,6 +1484,7 @@ function ProcessJSON(currentRoot, jsonNode) {
                 const entry = groupNode.elements[i];
                 ProcessJSON(elem, entry);
             }
+            createdElement = elem;
             break;
         }
         case 'range': {
@@ -1154,52 +1492,52 @@ function ProcessJSON(currentRoot, jsonNode) {
             const jMin = rangeNode.min;
             const jMax = rangeNode.max;
             const jValue = rangeNode.value;
-            currentRoot.addRange(jName, jMin, jMax, jValue);
+            const jShowPercent = rangeNode.percent === true;
+            createdElement = currentRoot.addRange(jName, jMin, jMax, jValue, jShowPercent);
             break;
         }
         case 'checkbox': {
             const checkboxNode = (jsonNode);
             const jValue = checkboxNode.value == 1 ? true : false;
-            currentRoot.addCheckBox(jName, jValue);
+            createdElement = currentRoot.addCheckBox(jName, jValue);
             break;
         }
         case 'radio': {
             const radioNode = (jsonNode);
             const entries = radioNode.items;
             const jValue = radioNode.value;
-            currentRoot.addRadioGroup(jName, entries, jValue);
+            createdElement = currentRoot.addRadioGroup(jName, entries, jValue);
             break;
         }
         case 'dropdown': {
             const dropDownNode = (jsonNode);
             const entries = dropDownNode.items;
             const jValue = dropDownNode.value;
-            currentRoot.addDropDown(jName, entries, jValue);
+            createdElement = currentRoot.addDropDown(jName, entries, jValue);
             break;
         }
         case 'button': {
-            currentRoot.addButton(jName);
+            createdElement = currentRoot.addButton(jName);
             break;
         }
         case 'numberfield_int32': {
             const numberFieldNode = (jsonNode);
             const jValue = numberFieldNode.value;
-            const jReadOnly = numberFieldNode.readOnly;
-            currentRoot.addNumberFieldInt32(jName, jValue).setReadOnly(jReadOnly);
+            createdElement = currentRoot.addNumberFieldInt32(jName, jValue);
             break;
         }
         case 'textfield': {
             const textFieldNode = (jsonNode);
             const jValue = textFieldNode.value;
             const jMaxLength = textFieldNode.maxLength;
-            currentRoot.addTextField(jName, jValue, jMaxLength);
+            createdElement = currentRoot.addTextField(jName, jValue, jMaxLength);
             break;
         }
         case 'password': {
             const textFieldNode = (jsonNode);
             const jValue = textFieldNode.value;
             const jMaxLength = textFieldNode.maxLength;
-            currentRoot.addPasswordField(jName, jValue, jMaxLength);
+            createdElement = currentRoot.addPasswordField(jName, jValue, jMaxLength);
             break;
         }
         case 'rgbwrange': {
@@ -1210,23 +1548,308 @@ function ProcessJSON(currentRoot, jsonNode) {
             const initialColor = ExtractPackedRGBW(jValue);
             const elem = currentRoot.addRGBWColorPicker(jName, colorChannels);
             elem.setValue(initialColor);
+            createdElement = elem;
             break;
         }
         case 'compass': {
             const compassNode = (jsonNode);
             const azimuth = compassNode.value;
-            currentRoot.addCompass(jName, azimuth);
+            createdElement = currentRoot.addCompass(jName, azimuth);
             break;
         }
         default:
             Log("Unhandled JSON element type: '" + jType + "'");
-            break;
+            return;
+    }
+    if (jsonNode.advanced) {
+        createdElement.setAdvanced(jsonNode.advanced);
+    }
+    if (jsonNode.readOnly) {
+        createdElement.setReadOnly(jsonNode.readOnly);
+    }
+}
+class BLEDeviceConnection extends UIGroupElement {
+    constructor(device, rootDiv) {
+        super(device.name ? device.name : device.id, null);
+        this.failedNotificationListenCount = 0;
+        this.device = device;
+        this.modelName = null;
+        this.classicCharacteristicMapping = new Map();
+        this.buttonDisconnect = HTML.CreateButtonElement('Disconnect');
+        this.disconnectHandler = () => { this.disconnect(); };
+        this.connectionFailedHandler = (err) => { this._connectionFailed(err); };
+        this.ledInfoChangeHandler = (event) => { this._handleLedInfoEvent(event); };
+        this.addToGroupHeader(this.buttonDisconnect);
+        this._connect();
+        ConnectedDevices.add(device);
+        this.buttonDisconnect.onclick = () => {
+            if (this.device.gatt && this.device.gatt.connected) {
+                this.device.gatt.disconnect();
+            }
+            else {
+                Log("Was not connected properly ... cleaning up");
+                this.destroy();
+            }
+        };
+        this.connectingAnimationElement = this._createConnectingAnimation();
+        this.headerStatus = null;
+        this.lastPingData = null;
+    }
+    destroy() {
+        this.device.removeEventListener('gattserverdisconnected', this.disconnectHandler);
+        if (this.ledInfoCharacteristic) {
+            this.ledInfoCharacteristic.removeEventListener('characteristicvaluechanged', this.ledInfoChangeHandler);
+        }
+        if (this.device.gatt && this.device.gatt.connected) {
+            this.device.gatt.disconnect();
+        }
+        this._stopPing();
+        //this.device.forget(); // Not supported on Android
+        ConnectedDevices.delete(this.device);
+        // Remove HTML Elements
+        super.destroy();
+    }
+    disconnect() {
+        try {
+            this.destroy();
+        }
+        catch (err) {
+            Log(String(err));
+        }
+        Log("Disconnected from " + this.getName());
+    }
+    _connect() {
+        if (!this.device.gatt) {
+            Log("Connected, but not GATT on device available!");
+            throw "Connected, but not GATT on device available!";
+        }
+        this.device.gatt.connect().then(server => {
+            Log("Getting Services ...");
+            return server.getPrimaryServices();
+        }).then(services => {
+            Log("Gettings Characteristics ...");
+            let queue = Promise.resolve();
+            services.forEach(service => {
+                queue = queue.then(_ => service.getCharacteristics().then(characteristics => {
+                    Log('> Service: ' + service.uuid);
+                    characteristics.forEach(characteristic => {
+                        this.onNewCharacteristic(characteristic);
+                        Log('>> Characteristic: ' + characteristic.uuid + ' ' + GetSupportedProperties(characteristic));
+                    });
+                }));
+            });
+        }).catch(this.connectionFailedHandler);
+        this.device.addEventListener('gattserverdisconnected', this.disconnectHandler);
+    }
+    _connectionFailed(err) {
+        Log("Connection failed with error: " + err.message);
+        this.disconnect();
+    }
+    _addRGBWCharacteristicElement(name, characteristic, colorChannels) {
+        // Remove connecting animation
+        this._removeConnectingAnimation();
+        const controlElement = this.addRGBWColorPicker(name, colorChannels);
+        const absoluteName = controlElement.getAbsoluteName();
+        this.classicCharacteristicMapping.set(absoluteName.toString(), characteristic);
+    }
+    _removeRGBWCharacteristicElementWhenExists(name, characteristic) {
+        return this.removeChildByName(name);
+    }
+    onInputValueChange(sourceElement, newValue) {
+        const sourceAbsoluteName = sourceElement.getAbsoluteName();
+        if (this._handleClassicCharacteristicMapping(sourceAbsoluteName, sourceElement, newValue))
+            return;
+        if (this.guiControl) {
+            const remoteName = sourceAbsoluteName.slice(1);
+            this.guiControl.setValue(remoteName, newValue);
+            return;
+        }
+        Log("Unhandled input event from element: " + sourceAbsoluteName);
+    }
+    _handleClassicCharacteristicMapping(absoluteName, sourceElement, newValue) {
+        const entry = this.classicCharacteristicMapping.get(absoluteName.toString());
+        if (!entry)
+            return false;
+        if (sourceElement.type !== UIElementType.ColorSelector)
+            throw 'Input event from classic characteristic mapping, but source is not a color selector!';
+        if (newValue.type !== ValueType.RGBWColor)
+            throw 'Input value is not a color value!';
+        SetColor(entry, newValue.getRGBWValue());
+        return true;
+    }
+    onNewCharacteristic(characteristic) {
+        if (this._handleKnownNameCharacteristic(characteristic))
+            return;
+        if (characteristic.uuid == CHARACTERISTIC_MODEL_NAME_UUID) {
+            characteristic.readValue().then((data) => {
+                const name = DecodeUTF8String(data);
+                this.modelName = name;
+                // TODO: Do something with the model name?
+            });
+        }
+        else if (characteristic.uuid == CHARACTERISTIC_LEDINFO_UUID) {
+            this.ledInfoCharacteristic = characteristic;
+            this._handleLedInfoCharacteristic(characteristic);
+        }
+        else if (characteristic.uuid == CHARACTERISTIC_GUI_UUID) {
+            const handleJsonFunction = (json) => {
+                // Remove connecting animation
+                this._removeConnectingAnimation();
+                // Process received GUI-JSON and construct the GUI controls
+                ProcessJSON(this, json);
+                this._startPing();
+            };
+            const handleUpdateValueFunction = (path, newValue) => {
+                const completePath = [this.getName()].concat(path);
+                this.setPathValue(completePath, newValue);
+            };
+            const handleFlagUpdateFunction = (path, flag, newState) => {
+                const completePath = [this.getName()].concat(path);
+                let targetElem = this.getByPath(completePath);
+                if (!targetElem) {
+                    throw "UI element for path '" + path + "' not found";
+                }
+                targetElem.setFlag(flag, newState);
+            };
+            this.guiControl = new GUIProtocolHandler(characteristic, handleJsonFunction, handleUpdateValueFunction, handleFlagUpdateFunction, this._handlePingResponse.bind(this));
+        }
+    }
+    _handleLedInfoCharacteristic(characteristic) {
+        characteristic.addEventListener('characteristicvaluechanged', this.ledInfoChangeHandler);
+        const reqSendFunction = function (characteristic, cmd) {
+            SendBLERequest(characteristic, cmd).catch(_ => {
+                // This is a workaround for android, because most times the first request failes with a "unknown reason"
+                // Also see https://github.com/LedgerHQ/ledgerjs/issues/352
+                Log('Request ' + cmd + ' failed, repeating ...');
+                reqSendFunction(characteristic, cmd);
+            });
+        };
+        const startNotificationFunction = () => {
+            characteristic.startNotifications().then(() => {
+                reqSendFunction(characteristic, 'list');
+            })
+                .catch((err) => {
+                this.failedNotificationListenCount++;
+                if (this.failedNotificationListenCount > 10) {
+                    Log("Error: startNotifications() failed 10 times, abort connection");
+                    this.disconnect();
+                    return;
+                }
+                Log("Error in startNotifications(): " + err + "; Repeating ...");
+                startNotificationFunction();
+            });
+        };
+        // Explicit stop notifications here, otherwise start notifications does not work when reconnecting.
+        characteristic.stopNotifications().then(startNotificationFunction)
+            .catch(() => { Log("Error in stopNotifications()"); });
+    }
+    _handleLedInfoEvent(event) {
+        if (!event.target) {
+            Log("Notification event without a target");
+            return;
+        }
+        if (event.target.hasOwnProperty('value')) {
+            Log("Notification event without a value");
+            return;
+        }
+        if (!this.ledInfoCharacteristic) {
+            throw "Something bad happend";
+        }
+        const value = this.ledInfoCharacteristic.value;
+        const view = new Uint8Array(value.buffer);
+        if (view[0] == 0x01) {
+            const rest = value.buffer.slice(1);
+            const dec = new TextDecoder("utf-8");
+            const decoded = dec.decode(rest);
+            const params = decoded.split(':');
+            const uuid = params[0];
+            const name = params[1];
+            const colorChannels = params[2];
+            Log("Custom UUID [" + uuid + "] with color channels: " + colorChannels);
+            const colors = ExtractColorChannels(colorChannels);
+            this.ledInfoCharacteristic.service.getCharacteristic(uuid).then(c => {
+                this._removeRGBWCharacteristicElementWhenExists(name, c);
+                this._addRGBWCharacteristicElement(name, c, colors);
+            });
+        }
+    }
+    _handlePingResponse(data) {
+        const time = Math.round(this.lastPingData ? (performance.now() - this.lastPingData.sendTime) : -1);
+        if (!this.headerStatus) {
+            this.headerStatus = new UIHeaderStatusElement();
+            this.addToGroupHeader(this.headerStatus.container);
+        }
+        this.headerStatus.setSignalStrength(data.rssi);
+        this.headerStatus.setPingTime(time);
+        if (Config.GetLogPingDetails()) {
+            const uptimeDate = new Date(0);
+            uptimeDate.setSeconds(data.uptime / 1000);
+            const uptimeText = uptimeDate.toISOString().substring(11, 19);
+            const freeHeapKiB = Math.round(data.freeHeap / 1024);
+            const minFreeHeapKiB = Math.round(data.minFreeHeap / 1024);
+            Log("Ping resp. data: rssi: " + data.rssi + ", conInterval: " + data.connectionIntervalMs + " ms, uptime: " + uptimeText + ", freeHeap: " + freeHeapKiB + " KiB, minFreeHeap: " + minFreeHeapKiB + " KiB");
+        }
+    }
+    _startPing() {
+        this.pingTimer = setInterval(() => __awaiter(this, void 0, void 0, function* () {
+            var _a;
+            if (!this.headerStatus && this.lastPingData) {
+                // First ping did not respond.
+                // Probably a library version without ping support.
+                // Stop pinging
+                Log("Ping seems not to be supported from this device.");
+                this._stopPing();
+                //return;
+            }
+            const requestId = (_a = this.guiControl) === null || _a === void 0 ? void 0 : _a.sendPing();
+            if (requestId) {
+                this.lastPingData = new PingData(requestId, performance.now());
+            }
+        }), PING_INTERVAL);
+    }
+    _stopPing() {
+        clearInterval(this.pingTimer);
+        this.pingTimer = undefined;
+    }
+    _handleKnownNameCharacteristic(characteristic) {
+        const knownName = LED_CHARACTERISTICS.get(characteristic.uuid);
+        if (!knownName)
+            return false;
+        const uuid = characteristic.uuid;
+        const name = LED_CHARACTERISTICS.get(characteristic.uuid);
+        if (name == null)
+            throw 'Lookup failure';
+        this._addRGBWCharacteristicElement(name, characteristic, new ColorChannels());
+        return true;
+    }
+    _createConnectingAnimation() {
+        let container = HTML.CreateDivElement('ble-connect-container');
+        for (let i = 0; i < 6; ++i) {
+            container.appendChild(HTML.CreateDivElement('ble-connect-dot'));
+        }
+        container.appendChild(HTML.CreateDivElement('ble-connect-glyph'));
+        this.container.appendChild(container);
+        return container;
+    }
+    _removeConnectingAnimation() {
+        if (this.connectingAnimationElement) {
+            this.getDomRootElement().removeChild(this.connectingAnimationElement);
+            this.connectingAnimationElement = null;
+        }
     }
 }
 class SliderElement {
-    constructor(slider, container) {
+    constructor(slider, container, valueLabel, maxValue) {
         this.slider = slider;
         this.container = container;
+        this.valueLabel = valueLabel;
+        this.maxValue = maxValue;
+    }
+    /**
+     * Shows the raw slider value next to the slider, e.g. "128 / 255".
+     */
+    updateValueLabel() {
+        this.valueLabel.innerText = this.slider.value + ' / ' + this.maxValue;
     }
 }
 function CreateRangeSlider(id, title, onColorChangeFunction, containerClass = null, minValue = 0, maxValue = 255) {
@@ -1240,19 +1863,28 @@ function CreateRangeSlider(id, title, onColorChangeFunction, containerClass = nu
     element.oninput = () => {
         onColorChangeFunction();
     };
+    HTML.AddScrollEventToRangeElement(element);
     const text = HTML.CreateSpanElement(title);
+    const valueLabel = HTML.CreateLabelElement();
+    valueLabel.classList.add('slider-value');
+    const labels = HTML.CreateDivElement('slider-labels');
+    labels.appendChild(text);
+    labels.appendChild(valueLabel);
     const container = HTML.CreateDivElement();
     if (containerClass) {
         container.classList.add('slider-background');
         container.classList.add(containerClass);
     }
     container.appendChild(element);
-    container.appendChild(text);
-    return new SliderElement(element, container);
+    container.appendChild(labels);
+    const sliderElement = new SliderElement(element, container, valueLabel, maxValue);
+    sliderElement.updateValueLabel();
+    return sliderElement;
 }
 const PendingCharacteristicPromises = new Map();
 const ConnectedDevices = new Set();
-const SERVICE_UUID = "a6a2fc07-815c-4262-97a9-1cef5181a1e4";
+const SERVICE_PRIMARY_UUID = "a6a2fc07-815c-4262-97a9-1cef5181a1e4";
+const SERVICE_SECONDARY_UUID = "a6a2fc07-815c-4262-97a9-1cef5181a1e5";
 const LED_CHARACTERISTICS = new Map([
     ["cd7ce55d-019d-4204-ad2e-a4d1464e3840", "Warp"],
     ["45864431-5197-4c89-9c52-30e8ec7ac523", "Impulse"],
@@ -1268,6 +1900,25 @@ const LED_CHARACTERISTICS = new Map([
 const CHARACTERISTIC_MODEL_NAME_UUID = "928ec7e1-b867-4b7d-904b-d3b8769a7299";
 const CHARACTERISTIC_LEDINFO_UUID = "013201e4-0873-4377-8bff-9a2389af3883";
 const CHARACTERISTIC_GUI_UUID = "013201e4-0873-4377-8bff-9a2389af3884";
+const PING_INTERVAL = 1000;
+function IsDeviceAlreadyConnected(device) {
+    return ConnectedDevices.has(device);
+}
+function GetBLEServicesArray() {
+    let result = [SERVICE_PRIMARY_UUID];
+    if (Config.GetShowSecondaryDevices()) {
+        result.push(SERVICE_SECONDARY_UUID);
+    }
+    console.log(result);
+    return result;
+}
+function GetBLEServiceFilter() {
+    let result = [{ services: [SERVICE_PRIMARY_UUID] }];
+    if (Config.GetShowSecondaryDevices()) {
+        result.push({ services: [SERVICE_SECONDARY_UUID] });
+    }
+    return result;
+}
 function Log(str, addNewLine = true) {
     const element = document.getElementById('log');
     if (element == null) {
@@ -1313,6 +1964,10 @@ function MemCpy(target, targetOffset, source, sourceOffset, length) {
     for (let i = 0; i < length; ++i) {
         target[targetOffset + i] = source[sourceOffset + i];
     }
+}
+function RoundToDigits(value, digits) {
+    const f = Math.pow(10, digits);
+    return Math.round(value * f) / f;
 }
 function ReloadPageAndDropWebWorkerCache() {
     if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
@@ -1443,7 +2098,9 @@ class HSLColor extends IColor {
         this.l = l;
     }
     toRGB() {
-        const h = this.h;
+        // Hue 360 is equivalent to 0. Wrapping also keeps negative values and
+        // rounded-to-360 values inside the ranges handled below.
+        const h = ((this.h % 360) + 360) % 360;
         const s = this.s / 100;
         const l = this.l / 100;
         const c = (1 - Math.abs(2 * l - 1)) * s;
@@ -1543,6 +2200,12 @@ function ExtractColorChannels(inputString) {
     const w = inputString.includes('W');
     return new ColorChannels(r, g, b, w);
 }
+class PingData {
+    constructor(requestId, sendTime) {
+        this.requestId = requestId;
+        this.sendTime = sendTime;
+    }
+}
 class HTML {
     static CreateDivElement(optDivClasses = null) {
         if (optDivClasses != null && !(optDivClasses instanceof Array)) {
@@ -1569,6 +2232,7 @@ class HTML {
         elem.min = '' + min;
         elem.max = '' + max;
         elem.value = '' + value;
+        this.AddScrollEventToRangeElement(elem);
         return elem;
     }
     static CreateColorPickerElement() {
@@ -1620,7 +2284,7 @@ class HTML {
         elem.value = value;
         return elem;
     }
-    static CreateLabelElement(optValue) {
+    static CreateLabelElement(optValue = null) {
         const elem = document.createElement('label');
         if (optValue) {
             elem.innerHTML = optValue;
@@ -1630,222 +2294,128 @@ class HTML {
     static CreateBrElement() {
         return document.createElement('br');
     }
+    static CreateBoldElement(value) {
+        let element = document.createElement('b');
+        element.innerText = value;
+        return element;
+    }
+    static CreateAnchorElement(url) {
+        let element = document.createElement('a');
+        element.href = url;
+        return element;
+    }
+    static CreateImageElement(src) {
+        let img = document.createElement('img');
+        img.src = src;
+        return img;
+    }
+    static CreateHElement(headerNumber, text) {
+        let element = document.createElement('h' + headerNumber);
+        element.innerText = text;
+        return element;
+    }
+    static AddScrollEventToRangeElement(elem) {
+        elem.onwheel = (e) => {
+            e.preventDefault();
+            let value = parseFloat(elem.value);
+            const min = parseFloat(elem.min);
+            const max = parseFloat(elem.max);
+            const range = max - min;
+            let step = range / 100;
+            if (step < 1) {
+                step = 1;
+            }
+            value += e.deltaY < 0 ? step : -step;
+            value = Math.max(min, Math.min(max, value));
+            elem.value = '' + value;
+            elem.dispatchEvent(new Event('input'));
+        };
+    }
+}
+const ID_CONFIG_SHOW_SECONDARY_DEVICES = 'config_show_secondary_devices';
+const ID_CONFIG_SHOW_ADVANCED_FIELDS = 'config_show_advanced_fields';
+const ID_CONFOG_LOG_PING_DETAILS = 'config_log_ping_details';
+class Config {
+    static GetShowSecondaryDevices() {
+        return this.GetCheckboxValueById(ID_CONFIG_SHOW_SECONDARY_DEVICES);
+    }
+    static GetShowAdvancedFields() {
+        return this.GetCheckboxValueById(ID_CONFIG_SHOW_ADVANCED_FIELDS);
+    }
+    static GetLogPingDetails() {
+        return this.GetCheckboxValueById(ID_CONFOG_LOG_PING_DETAILS);
+    }
+    static Init() {
+        Config.InitCheckboxById(ID_CONFIG_SHOW_SECONDARY_DEVICES);
+        Config.InitCheckboxById(ID_CONFIG_SHOW_ADVANCED_FIELDS, AUIElement.notifyConfigChanges);
+        Config.InitCheckboxById(ID_CONFOG_LOG_PING_DETAILS);
+    }
+    static InitCheckboxById(elementId, onChangeFunction) {
+        const elem = document.getElementById(elementId);
+        if (!elem) {
+            Log("Error: HTML element '" + elementId + "' not found");
+            throw "Error: HTML element '" + elementId + "' not found";
+        }
+        Config.InitCheckbox(elem, onChangeFunction);
+    }
+    static InitCheckbox(checkbox, onChangeFunction) {
+        const id = checkbox.id;
+        checkbox.onclick = () => {
+            const newValue = checkbox.checked;
+            if (onChangeFunction) {
+                onChangeFunction();
+            }
+            Config.SaveConfigInBrowserStorage(id, newValue);
+        };
+        const persistedValue = Config.LoadBrowserStoredConfig(id);
+        if (typeof persistedValue === "boolean") {
+            checkbox.checked = persistedValue;
+        }
+    }
+    static GetCheckboxValueById(elementId) {
+        const elem = document.getElementById(elementId);
+        if (!elem) {
+            Log("Error: HTML element '" + elementId + "' not found");
+            throw "Error: HTML element '" + elementId + "' not found";
+        }
+        return elem.checked;
+    }
+    static SaveConfigInBrowserStorage(elementId, newValue) {
+        try {
+            localStorage.setItem(elementId, "" + newValue);
+        }
+        catch (_) {
+            // Ignored (not supported or disabled by the user)
+        }
+    }
+    static LoadBrowserStoredConfig(elementId) {
+        try {
+            const storedValue = localStorage.getItem(elementId);
+            if (!storedValue) {
+                return null;
+            }
+            return storedValue === 'true';
+        }
+        catch (_) {
+            // Ignored (not supported or disabled by the user)
+            return null;
+        }
+    }
 }
 // Important: Needs the "bluetooth" permission when used in a iframe
-var ControlMappingType;
-(function (ControlMappingType) {
-    ControlMappingType[ControlMappingType["UUID"] = 0] = "UUID";
-})(ControlMappingType || (ControlMappingType = {}));
-class DeviceConnection extends UIGroupElement {
-    constructor(device, rootDiv) {
-        super(device.name ? device.name : device.id, null);
-        this.device = device;
-        this.modelName = null;
-        this.classicCharacteristicMapping = new Map();
-        this.buttonDisconnect = HTML.CreateButtonElement('Disconnect');
-        this.disconnectHandler = () => { this.disconnect(); };
-        this.connectionFailedHandler = (err) => { this._connectionFailed(err); };
-        this.ledInfoChangeHandler = (event) => { this._handleLedInfoEvent(event); };
-        this.addToGroupHeader(this.buttonDisconnect);
-        this._connect();
-        ConnectedDevices.add(device);
-        this.buttonDisconnect.onclick = () => {
-            if (this.device.gatt && this.device.gatt.connected) {
-                this.device.gatt.disconnect();
-            }
-            else {
-                Log("Was not connected properly ... cleaning up");
-                this.destroy();
-            }
-        };
-    }
-    destroy() {
-        this.device.removeEventListener('gattserverdisconnected', this.disconnectHandler);
-        if (this.ledInfoCharacteristic) {
-            this.ledInfoCharacteristic.removeEventListener('characteristicvaluechanged', this.ledInfoChangeHandler);
-        }
-        if (this.device.gatt && this.device.gatt.connected) {
-            this.device.gatt.disconnect();
-        }
-        //this.device.forget(); // Not supported on Android
-        ConnectedDevices.delete(this.device);
-        // Remove HTML Elements
-        super.destroy();
-    }
-    disconnect() {
-        try {
-            this.destroy();
-        }
-        catch (err) {
-            Log(String(err));
-        }
-        Log("Disconnected from " + this.getName());
-    }
-    _connect() {
-        if (!this.device.gatt) {
-            Log("Connected, but not GATT on device available!");
-            throw "Connected, but not GATT on device available!";
-        }
-        this.device.gatt.connect().then(server => {
-            Log("Getting Services ...");
-            return server.getPrimaryServices();
-        }).then(services => {
-            Log("Gettings Characteristics ...");
-            let queue = Promise.resolve();
-            services.forEach(service => {
-                queue = queue.then(_ => service.getCharacteristics().then(characteristics => {
-                    Log('> Service: ' + service.uuid);
-                    characteristics.forEach(characteristic => {
-                        this.onNewCharacteristic(characteristic);
-                        Log('>> Characteristic: ' + characteristic.uuid + ' ' + GetSupportedProperties(characteristic));
-                    });
-                }));
-            });
-        }).catch(this.connectionFailedHandler);
-        this.device.addEventListener('gattserverdisconnected', this.disconnectHandler);
-    }
-    _connectionFailed(err) {
-        Log("Connection failed with error: " + err.message);
-        this.disconnect();
-    }
-    _addRGBWCharacteristicElement(name, characteristic, colorChannels) {
-        const controlElement = this.addRGBWColorPicker(name, colorChannels);
-        const absoluteName = controlElement.getAbsoluteName();
-        this.classicCharacteristicMapping.set(absoluteName.toString(), characteristic);
-    }
-    _removeRGBWCharacteristicElementWhenExists(name, characteristic) {
-        return this.removeChildByName(name);
-    }
-    onInputValueChange(sourceElement, newValue) {
-        const sourceAbsoluteName = sourceElement.getAbsoluteName();
-        if (this._handleClassicCharacteristicMapping(sourceAbsoluteName, sourceElement, newValue))
-            return;
-        if (this.guiControl) {
-            const remoteName = sourceAbsoluteName.slice(1);
-            this.guiControl.setValue(remoteName, newValue);
-            return;
-        }
-        Log("Unhandled input event from element: " + sourceAbsoluteName);
-    }
-    _handleClassicCharacteristicMapping(absoluteName, sourceElement, newValue) {
-        const entry = this.classicCharacteristicMapping.get(absoluteName.toString());
-        if (!entry)
-            return false;
-        if (sourceElement.type !== UIElementType.ColorSelector)
-            throw 'Input event from classic characteristic mapping, but source is not a color selector!';
-        if (newValue.type !== ValueType.RGBWColor)
-            throw 'Input value is not a color value!';
-        SetColor(entry, newValue.getRGBWValue());
-        return true;
-    }
-    onNewCharacteristic(characteristic) {
-        if (this._handleKnownNameCharacteristic(characteristic))
-            return;
-        if (characteristic.uuid == CHARACTERISTIC_MODEL_NAME_UUID) {
-            characteristic.readValue().then((data) => {
-                const name = DecodeUTF8String(data);
-                this.modelName = name;
-                // TODO: Do something with the model name?
-            });
-        }
-        else if (characteristic.uuid == CHARACTERISTIC_LEDINFO_UUID) {
-            this.ledInfoCharacteristic = characteristic;
-            this._handleLedInfoCharacteristic(characteristic);
-        }
-        else if (characteristic.uuid == CHARACTERISTIC_GUI_UUID) {
-            const handleJsonFunction = (json) => {
-                ProcessJSON(this, json);
-            };
-            const handleUpdateValueFunction = (path, newValue) => {
-                const completePath = [this.getName()].concat(path);
-                this.setPathValue(completePath, newValue);
-            };
-            this.guiControl = new GUIProtocolHandler(characteristic, handleJsonFunction, handleUpdateValueFunction);
-        }
-    }
-    _handleLedInfoCharacteristic(characteristic) {
-        characteristic.addEventListener('characteristicvaluechanged', this.ledInfoChangeHandler);
-        const reqSendFunction = function (characteristic, cmd) {
-            SendBLERequest(characteristic, cmd).catch(_ => {
-                // This is a workaround for android, because most times the first request failes with a "unknown reason"
-                // Also see https://github.com/LedgerHQ/ledgerjs/issues/352
-                Log('Request ' + cmd + ' failed, repeating ...');
-                reqSendFunction(characteristic, cmd);
-            });
-        };
-        const startNotificationFunction = () => {
-            characteristic.startNotifications().then(() => {
-                reqSendFunction(characteristic, 'list');
-            })
-                .catch((err) => {
-                Log("Error in startNotifications(): " + err + "; Repeating ...");
-                startNotificationFunction();
-            });
-        };
-        // Explicit stop notifications here, otherwise start notifications does not work when reconnecting.
-        characteristic.stopNotifications().then(startNotificationFunction)
-            .catch(() => { Log("Error in stopNotifications()"); });
-    }
-    _handleLedInfoEvent(event) {
-        if (!event.target) {
-            Log("Notification event without a target");
-            return;
-        }
-        if (event.target.hasOwnProperty('value')) {
-            Log("Notification event without a value");
-            return;
-        }
-        if (!this.ledInfoCharacteristic) {
-            throw "Something bad happend";
-        }
-        const value = this.ledInfoCharacteristic.value;
-        const view = new Uint8Array(value.buffer);
-        if (view[0] == 0x01) {
-            const rest = value.buffer.slice(1);
-            const dec = new TextDecoder("utf-8");
-            const decoded = dec.decode(rest);
-            const params = decoded.split(':');
-            const uuid = params[0];
-            const name = params[1];
-            const colorChannels = params[2];
-            Log("Custom UUID [" + uuid + "] with color channels: " + colorChannels);
-            const colors = ExtractColorChannels(colorChannels);
-            this.ledInfoCharacteristic.service.getCharacteristic(uuid).then(c => {
-                this._removeRGBWCharacteristicElementWhenExists(name, c);
-                this._addRGBWCharacteristicElement(name, c, colors);
-            });
-        }
-    }
-    _handleKnownNameCharacteristic(characteristic) {
-        const knownName = LED_CHARACTERISTICS.get(characteristic.uuid);
-        if (!knownName)
-            return false;
-        const uuid = characteristic.uuid;
-        const name = LED_CHARACTERISTICS.get(characteristic.uuid);
-        if (name == null)
-            throw 'Lookup failure';
-        this._addRGBWCharacteristicElement(name, characteristic, new ColorChannels());
-        return true;
-    }
-}
-function IsDeviceAlreadyConnected(device) {
-    return ConnectedDevices.has(device);
-}
 function Scan() {
     Log("Starting scan ...");
     try {
         navigator.bluetooth.requestDevice({
             //acceptAllDevices: true,
-            filters: [{
-                    services: [SERVICE_UUID]
-                }]
+            filters: GetBLEServiceFilter()
         }).then(device => {
             if (IsDeviceAlreadyConnected(device)) {
                 Log("Device is already connected, ignoring request.");
                 return;
             }
             Log("Selected device '" + device.name + "', connecting ...");
-            new DeviceConnection(device, document.body);
+            new BLEDeviceConnection(device, document.body);
         });
     }
     catch (ex) {
@@ -1896,8 +2466,22 @@ window.onerror = (event) => {
         Log("" + event);
     }
 };
+function ToggleSettingsMenu() {
+    const overlay = document.getElementById('settings-overlay');
+    if (overlay) {
+        overlay.style.display = overlay.style.display === 'flex' ? 'none' : 'flex';
+    }
+}
+function HandleSettingsOverlayClick(event) {
+    const target = event.target;
+    const content = document.querySelector('.overlay-content');
+    if (!content.contains(target)) {
+        ToggleSettingsMenu();
+    }
+}
 function Init() {
     LogClear();
+    Config.Init();
     if (!navigator.bluetooth) {
         Log("Sorry, your browser does not support web bluetooth.");
     }
@@ -1912,7 +2496,6 @@ function Init() {
         nestedGroup.addRGBWColorPicker('Sub color picker with only the white channel', new ColorChannels(false, false, false, true));
         nestedGroup.addRadioGroup('Radio select test', ['Entry 1', 'Entry 2', 'Entry 3'], 1);
         nestedGroup.addDropDown('Drop down test', ['Entry 1', 'Entry 2', 'Entry 3'], 1);
-        rootGroup.setDisabled(true);
         const group2 = rootGroup.addGroup("Sub Group 2");
         group2.addCheckBox('CheckBox 1', false);
         group2.addCheckBox('CheckBox 2', true);
@@ -1923,7 +2506,6 @@ function Init() {
         group2.addNumberFieldInt32('Number field 2', 42).setReadOnly(true);
         group2.addTextField("Text input", "Example", 30);
         group2.addCompass('Compass2', 45);
-        group2.setDisabled(true);
     }
     if ('serviceWorker' in navigator) {
         console.log('Registering service worker');
